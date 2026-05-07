@@ -65,7 +65,7 @@ class CounterexampleResult:
     SPEC_NOT_VIOLATED = "spec_not_violated"
     WRONG_SHAPE = 'wrong_shape'
 
-def is_correct_counterexample(ce_path, cat, net, prop):
+def is_correct_counterexample(ce_path, cat, net, prop, benchmark_version=None):
     """is the counterexample correct? returns an element of CounterexampleResult 
     """
 
@@ -86,8 +86,21 @@ def is_correct_counterexample(ce_path, cat, net, prop):
  
     assert "_" == cat[4], f"expected year at start of cat: {cat}"
     cat_no_year = cat[5:]
-    onnx_filename = f"{benchmark_repo}/benchmarks/{cat_no_year}/onnx/{net}.onnx"
-    vnnlib_filename = f"{benchmark_repo}/benchmarks/{cat_no_year}/vnnlib/{prop}.vnnlib"
+    benchmark_dir = Path(benchmark_repo) / "benchmarks" / cat_no_year
+
+    if benchmark_version:
+        benchmark_dir = benchmark_dir / benchmark_version
+    else:
+        versioned_benchmark_dir = benchmark_dir / "1.0"
+
+        if versioned_benchmark_dir.is_dir():
+            benchmark_dir = versioned_benchmark_dir
+
+    if benchmark_version and not benchmark_dir.is_dir():
+        raise FileNotFoundError(f"benchmark version directory not found: {benchmark_dir}")
+
+    onnx_filename = str(benchmark_dir / "onnx" / f"{net}.onnx")
+    vnnlib_filename = str(benchmark_dir / "vnnlib" / f"{prop}.vnnlib")
 
     if not Path(onnx_filename).is_file():
         # try unzipping

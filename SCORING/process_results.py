@@ -215,6 +215,21 @@ class LongTableRow:
         self.result = result
         self.tool_times_scores = tool_times_scores
 
+def benchmark_version_from_result_path(cat, network_path):
+    """Return the version directory used in a benchmark result path, if present."""
+
+    assert "_" == cat[4], f"expected year at start of cat: {cat}"
+    cat_no_year = cat[5:]
+    parts = Path(network_path).parts
+
+    for i, part in enumerate(parts):
+        if part == "benchmarks" and i + 2 < len(parts) and parts[i + 1] == cat_no_year:
+            candidate = parts[i + 2]
+            if candidate not in ("onnx", "vnnlib"):
+                return candidate
+
+    return None
+
 def compare_results(all_tool_names, gnuplot_tool_cat_times, result_list, single_overhead, scored):
     """compare results across tools"""
 
@@ -311,6 +326,7 @@ def compare_results(all_tool_names, gnuplot_tool_cat_times, result_list, single_
                     # construct counterexample path
                     row = t.category_to_list[cat][index]
                     full_network_path = row[ToolResult.NETWORK]
+                    benchmark_version = benchmark_version_from_result_path(cat, full_network_path)
                     net = Path(full_network_path).stem
                     prop = Path(row[ToolResult.PROP]).stem
                     
@@ -330,7 +346,7 @@ def compare_results(all_tool_names, gnuplot_tool_cat_times, result_list, single_
                     if not Settings.SKIP_CE_FILES:
                         assert Path(ce_path).is_file(), f"CE path not found: {ce_path} and Settings.SKIP_CE_FILES is False"
 
-                    tup = ce_path, cat, net, prop
+                    tup = ce_path, cat, net, prop, benchmark_version
                     counterexamples_violated.append(tup)
 
                 table_row.append(f"{round(secs, 1)} ({res[0]})")
@@ -1312,6 +1328,7 @@ def process_single_tool_or_benchmark(csv_path):
                 network = Path(row[ToolResult.NETWORK]).stem
                 prop = Path(row[ToolResult.PROP]).stem
                 full_network_path = row[ToolResult.NETWORK]
+                benchmark_version = benchmark_version_from_result_path(cat, full_network_path)
                 instance = f"{network}-{prop}"
                 result = row[ToolResult.RESULT]
                 runtime = float(row[ToolResult.RUN_TIME])
@@ -1338,7 +1355,7 @@ def process_single_tool_or_benchmark(csv_path):
                     
                     try:
                         # Validate counterexample
-                        tup = ce_path, cat, net, prop_name
+                        tup = ce_path, cat, net, prop_name, benchmark_version
                         res = is_correct_counterexample(*tup)
                         
                         # Check if the counterexample is valid
