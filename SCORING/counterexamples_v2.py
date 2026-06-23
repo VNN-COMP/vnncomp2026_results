@@ -9,6 +9,7 @@ import onnxruntime as ort
 import vnnlib
 
 from benchmark_instances import parse_network_field, resolve_benchmark_path
+from cex_checks import CPU_PROVIDER
 
 
 _ASSIGNMENT_HEADER = re.compile(r"^(\S+)\s+(\S+)\s+\[([0-9,\s]*)\]$")
@@ -275,8 +276,8 @@ def _network_model_paths(query, network_field, benchmark_dir):
 def _session(model_path):
     if str(model_path).endswith(".gz"):
         with gzip.open(model_path, "rb") as stream:
-            return ort.InferenceSession(stream.read())
-    return ort.InferenceSession(str(model_path))
+            return ort.InferenceSession(stream.read(), providers=[CPU_PROVIDER])
+    return ort.InferenceSession(str(model_path), providers=[CPU_PROVIDER])
 
 
 def _reshape_for_onnx(value, onnx_shape, variable_name):
@@ -440,7 +441,57 @@ def _eval_boolean(expression, assignment, tolerance):
     raise UnsupportedVNNLIB2Error(f"unsupported boolean expression {node_type}")
 
 
-def _assertions_hold(query, assignment, tolerance):
+def _expression_variables(expression):
+    node_type = type(expression).__name__
+    if node_type == "Var":
+        return {expression.name}
+
+    variables = set()
+    for attr in ("expr", "lhs", "rhs", "head"):
+        if hasattr(expression, attr):
+            variables.update(_expression_variables(getattr(expression, attr)))
+    for attr in ("args", "rest"):
+        if hasattr(expression, attr):
+            for child in getattr(expression, attr):
+                variables.update(_expression_variables(child))
+    return variables
+
+
+def _input_names(query):
+    return {
+        definition.name
+        for network in query.networks
+        for definition in network.inputs
+    }
+
+
+def _assertions_hold(query, assignment, input_tolerance, output_tolerance=0.0):
+    inputs = _input_names(query)
+    for assertion in query.assertions:
+        variables = _expression_variables(assertion.expr)
+        tolerance = input_tolerance if variables and variables <= inputs else output_tolerance
+        if not _eval_boolean(assertion.expr, assignment, tolerance):
+            return False
+    return True
+
+
+def _assertions_rationale(query, assignment, input_tolerance, output_tolerance=0.0):
+    inputs = _input_names(query)
+    failures = []
+    for index, assertion in enumerate(query.assertions):
+        variables = _expression_variables(assertion.expr)
+        tolerance = input_tolerance if variables and variables <= inputs else output_tolerance
+        if not _eval_boolean(assertion.expr, assignment, tolerance):
+            failures.append(
+                f"assertion {index} failed with tolerance {tolerance} "
+                f"({'input' if variables and variables <= inputs else 'output/mixed'})"
+            )
+    if failures:
+        return "; ".join(failures)
+    return f"all assertions hold with input_tolerance={input_tolerance}, output_tolerance={output_tolerance}"
+
+
+def _legacy_assertions_hold(query, assignment, tolerance):
     return all(
         _eval_boolean(assertion.expr, assignment, tolerance)
         for assertion in query.assertions
@@ -494,28 +545,26 @@ def validate_vnnlib2_counterexample(
     ) as error:
         return result_type.UNSUPPORTED, str(error)
 
-    if ignore_ce_outputs:
-        outputs_match = True
-        execution_message = "counterexample outputs ignored; using ONNX execution outputs"
-    else:
-        outputs_match, execution_message = _outputs_match(
-            assignment, computed, abs_tol, rel_tol
-        )
-        if not outputs_match:
-            return result_type.EXEC_DOESNT_MATCH, execution_message
-
     evaluation_assignment = dict(assignment)
-    if ignore_ce_outputs:
-        evaluation_assignment.update(computed)
+    evaluation_assignment.update(computed)
+    execution_message = "counterexample outputs ignored; using ONNX CPU replay outputs"
 
-    if not _assertions_hold(query, evaluation_assignment, abs_tol):
-        return result_type.SPEC_NOT_VIOLATED, "counterexample does not satisfy every assertion"
+    if _assertions_hold(query, evaluation_assignment, 0.0, 0.0):
+        return (
+            result_type.CORRECT,
+            f"{execution_message}; "
+            + _assertions_rationale(query, evaluation_assignment, 0.0, 0.0),
+        )
 
-    strict_outputs_match = ignore_ce_outputs or _outputs_match(
-        assignment, computed, 1e-7, 1e-7
-    )[0]
-    strict_assertions_hold = _assertions_hold(query, evaluation_assignment, 0.0)
-    if not strict_outputs_match or not strict_assertions_hold:
-        return result_type.CORRECT_UP_TO_TOLERANCE, execution_message
+    if _assertions_hold(query, evaluation_assignment, abs_tol, 0.0):
+        return (
+            result_type.CORRECT_UP_TO_TOLERANCE,
+            f"{execution_message}; input constraints require at most {abs_tol} absolute tolerance; "
+            + _assertions_rationale(query, evaluation_assignment, abs_tol, 0.0),
+        )
 
-    return result_type.CORRECT, execution_message
+    return (
+        result_type.SPEC_NOT_VIOLATED,
+        f"{execution_message}; "
+        + _assertions_rationale(query, evaluation_assignment, abs_tol, 0.0),
+    )
