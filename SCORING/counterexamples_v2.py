@@ -1,4 +1,37 @@
-"""Counterexample validation for VNNLIB 2.0 queries."""
+"""Counterexample validation for VNNLIB 2.0 queries.
+
+Scope (checked against the official ``vnncomp2026_benchmarks`` repo, 2026-06):
+every 2.0 ``.vnnlib`` query in the benchmark set uses only the features handled
+below, so this validator is functionally complete for the 2026 competition:
+
+  * element types: ``float32`` and ``real`` only (``real`` is parsed as
+    ``DType.Unknown`` and treated as float64);
+  * a single ``declare-network``, OR two networks related by ``equal-to``
+    (monotonic_acasxu_2026, same ONNX) or ``isomorphic-to`` (isomorphic_acasxu_2026,
+    two distinct ONNX files -- handled because ``isomorphic-to`` leaves
+    ``Network.equal_to`` empty, so g is run as an independent network);
+  * linear AND polynomial assertions (``*`` is used by
+    adaptive_cruise_control_non_linear_2026 and linearizenn_2024);
+  * ``and`` / ``or`` / ``==`` / ``!=`` / unary ``-`` / multi-dim indexing.
+
+Query parsing AND type/scope checking are delegated to the official VNNLIB-Python
+package (``vnnlib==1.0.2``): ``parse_query_string`` runs the reference type checker
+and raises ``vnnlib.VNNLibException`` on any ill-typed/ill-scoped query, which we map
+to ``UNSUPPORTED`` below. The hand-rolled type logic that remains here
+(``_assignment_type_matches``, ``_validate_element_type``) is deliberately NOT a
+re-implementation of that checker -- it validates two things the official checker
+does not see: the solver's textual counterexample assignment, and the declared
+element types vs. the actual ONNX tensor types at run time.
+
+TODO (not required by any 2026 benchmark; each currently returns UNSUPPORTED so a
+tool is never penalized for our gap -- see the raises below):
+  * ``declare-hidden`` variables (no 2026 benchmark uses them);
+  * element types beyond float32/real (the package's DType enum also defines
+    BF16, the int/uint family, bool, the float8 variants, complex, string);
+  * actually *enforcing* the ``equal-to`` / ``isomorphic-to`` structural relation
+    (we currently ignore it, which is sound for counterexample checking but would
+    be needed to validate the relation itself).
+"""
 
 import gzip
 import math
@@ -184,6 +217,10 @@ def parse_text_assignment(content, query):
 
         dtype_key = _dtype_name(definition.dtype)
         if dtype_key not in _NUMPY_DTYPES:
+            # TODO: extend _NUMPY_DTYPES if a future benchmark uses a type beyond
+            # float32/real (the package DType enum also defines BF16, the float8
+            # variants, complex, string, etc.). 2026 uses only F32 and Unknown(real),
+            # so anything else is reported UNSUPPORTED rather than mis-parsed.
             raise UnsupportedVNNLIB2Error(
                 f"unsupported assignment type {definition.dtype} for {name}"
             )
@@ -343,6 +380,10 @@ def _run_networks(query, model_paths, assignment):
 
     for network in query.networks:
         if network.hidden:
+            # TODO: hidden-node support. No 2026 benchmark declares hidden variables,
+            # so this returns UNSUPPORTED (non-penalizing) rather than being implemented.
+            # Implementing it requires feeding intermediate tensors / reading them back
+            # out of the ONNX graph, which onnxruntime does not expose directly.
             raise UnsupportedVNNLIB2Error(
                 f"network {network.name} declares hidden variables, which are not supported yet"
             )
