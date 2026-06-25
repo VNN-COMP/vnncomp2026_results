@@ -281,6 +281,31 @@ def compare_results(all_tool_names, gnuplot_tool_cat_times, result_list, single_
         # work with participating tools only
         tool_names = [t.tool_name for t in participating_tools]
         print(f"{len(participating_tools)} participating tools: {tool_names}")
+
+        # CROSS-VERSION ALIGNMENT GUARD:
+        # Scoring compares tools purely by (category, positional index) -- the vnnlib
+        # version is NOT part of the key (it only lives in the NETWORK path). That makes
+        # scoring correctly cross-version (a 1.0 tool and a 2.0 tool are compared head to
+        # head on the same instance) BUT it silently assumes every version's instances.csv
+        # enumerates the same instances in the same order. Nothing upstream enforces that,
+        # so verify it here: at each index, all participating tools must reference the same
+        # version-independent instance identity (onnx stem + property stem; the version is
+        # only a path segment, stripped out by network_stem/property_stem). If this ever
+        # fires, the per-version instances.csv files have drifted out of lockstep and the
+        # cross-version comparison is meaningless for that category.
+        if len(participating_tools) > 1:
+            for align_index in range(num_rows):
+                identities = {
+                    (network_stem(t.category_to_list[cat][align_index][ToolResult.NETWORK]),
+                     property_stem(t.category_to_list[cat][align_index][ToolResult.PROP]))
+                    for t in participating_tools
+                }
+                assert len(identities) == 1, (
+                    f"cross-version instance misalignment in cat {cat} at index {align_index}: "
+                    f"participating tools reference different instances {identities}. The "
+                    f"per-version instances.csv files must list instances in the same order."
+                )
+
         table_rows = []
         all_times = []
         all_results = []
