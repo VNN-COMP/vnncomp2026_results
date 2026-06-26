@@ -64,9 +64,9 @@ class Settings:
 
     SKIP_CE_FILES = True
 
-    COUNTEREXAMPLE_ATOL = 1e-4 # used to check if CE satisfies spec (is insice input box and violates output property)
-    COUNTEREXAMPLE_RTOL = 1e-3 # used to check if CE matches execution
-    IGNORE_CE_Y = False  # Discard the Y provided in the CE files. Instead compute it using onnx
+    COUNTEREXAMPLE_ATOL = 1e-4 # input-bound tolerance for CORRECT_WITH_TOLERANCE witnesses
+    COUNTEREXAMPLE_RTOL = 0.0 # solver-provided outputs are ignored; replayed ONNX outputs are authoritative
+    IGNORE_CE_Y = True  # Discard Y values from CE files. Instead compute outputs using onnxruntime.
 
     PENALTY_INCORRECT = -150
 

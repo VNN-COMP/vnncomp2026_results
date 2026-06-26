@@ -23,6 +23,7 @@ ort.capi._pybind_state.get_default_session_options = get_default_session_options
 from vnnlib_v1 import read_vnnlib_simple, get_io_nodes
 
 from cachier import cachier
+from cex_checks import CPU_PROVIDER
 from settings import Settings
 
 def predict_with_onnxruntime(model_def, *inputs):
@@ -31,7 +32,11 @@ def predict_with_onnxruntime(model_def, *inputs):
     sess_opt = ort.SessionOptions()
     sess_opt.intra_op_num_threads = 12
     sess_opt.inter_op_num_threads = 12
-    sess = ort.InferenceSession(model_def.SerializeToString(), sess_opt)
+    sess = ort.InferenceSession(
+        model_def.SerializeToString(),
+        sess_opt,
+        providers=[CPU_PROVIDER],
+    )
     names = [i.name for i in sess.get_inputs()]
 
     inp = dict(zip(names, inputs))
@@ -68,6 +73,11 @@ class CounterexampleResult:
     UNSUPPORTED = "unsupported"
 
 def is_correct_counterexample(ce_path, cat, net, prop, benchmark_version=None):
+    res, _msg = check_counterexample(ce_path, cat, net, prop, benchmark_version)
+    return res
+
+
+def check_counterexample(ce_path, cat, net, prop, benchmark_version=None):
     """is the counterexample correct? returns an element of CounterexampleResult 
     """
 
@@ -112,10 +122,10 @@ def is_correct_counterexample(ce_path, cat, net, prop, benchmark_version=None):
             Settings.COUNTEREXAMPLE_ATOL,
             Settings.COUNTEREXAMPLE_RTOL,
             CounterexampleResult,
-            Settings.IGNORE_CE_Y,
+            True,
         )
         print(f"CE result {res}: {msg}")
-        return res
+        return res, msg
 
     onnx_filename = str(benchmark_dir / "onnx" / f"{net}.onnx")
     vnnlib_filename = str(benchmark_dir / "vnnlib" / f"{prop}.vnnlib")
@@ -159,7 +169,7 @@ def is_correct_counterexample(ce_path, cat, net, prop, benchmark_version=None):
 
     print(f"CE result {res}: {msg}")
     
-    return res
+    return res, msg
 
 # @cachier(cache_dir='./cachier', stale_after=datetime.timedelta(days=7))
 def get_ce_diff(onnx_filename, vnnlib_filename, ce_path, abs_tol, rel_tol):
@@ -223,65 +233,47 @@ def get_ce_diff(onnx_filename, vnnlib_filename, ce_path, abs_tol, rel_tol):
 
     flat_out = output.flatten(flatten_order)
 
-    expected_y = np.array(y_list)
-    extra_msg = ""
+    strict_vio, strict_msg = is_specification_vio(
+        onnx_filename,
+        vnnlib_filename,
+        tuple(x_list),
+        tuple(flat_out),
+        input_tol=0.0,
+        output_tol=0.0,
+    )
+    if strict_vio:
+        return (
+            CounterexampleResult.CORRECT,
+            "Solver-provided output values ignored; ONNX CPU replay output satisfies the property with strict input bounds.\n"
+            + strict_msg,
+        )
 
-    if Settings.IGNORE_CE_Y:
-        rel_error = 0
-        msg = "Y from CE file ignored. Use onnxruntime prediction of Y instead."
-        used_output = flat_out
-    else:
-        try:
-            diff = np.linalg.norm(flat_out - expected_y, ord=np.inf)
-            norm = np.linalg.norm(expected_y, ord=np.inf)
-            if norm < 1e-6: # don't divide by zero
-                rel_error = 0
-            else:
-                rel_error = diff / norm
-        except ValueError as e:
-            diff = 9999
-            rel_error = 9999
-            extra_msg = f" ERROR: {e}"
-        msg = f"L-inf norm difference between onnx execution and CE file output: {diff} (rel error: {rel_error});"
-        msg += f"(rel_limit: {rel_tol})"
+    tolerant_vio, tolerant_msg = is_specification_vio(
+        onnx_filename,
+        vnnlib_filename,
+        tuple(x_list),
+        tuple(flat_out),
+        input_tol=abs_tol,
+        output_tol=0.0,
+    )
+    if tolerant_vio:
+        return (
+            CounterexampleResult.CORRECT_UP_TO_TOLERANCE,
+            "Solver-provided output values ignored; ONNX CPU replay output satisfies the property, "
+            f"but the input needs up to {abs_tol} absolute tolerance.\n{tolerant_msg}",
+        )
 
-        used_output = y_list
-
-    #return diff, tuple(x_list), tuple(y_list)
-
-    #diff, x_tup, y_tup = res
-
-    msg += extra_msg
-    rv = CounterexampleResult.CORRECT
-
-    if rel_error > rel_tol:
-        rv = CounterexampleResult.EXEC_DOESNT_MATCH
-    else:
-        # output matched onnxruntime, also need to check that the spec file was obeyed
-        is_vio, msg2 = is_specification_vio(onnx_filename, vnnlib_filename, tuple(x_list), tuple(used_output), abs_tol)
-
-        msg += "\n" + msg2
-
-        if is_vio:
-            # If the example is only valid because it's within the defined error tolerance,
-            # this tool will not receive a penalty, but other tools may still correctly
-            # prove UNSAT
-            is_vio_small_tolerance, _ = is_specification_vio(onnx_filename, vnnlib_filename, tuple(x_list), tuple(used_output), 1e-7)
-            if rel_error > 1e-6 or not is_vio_small_tolerance:
-            # if rel_error > 0 or not is_vio_zero_tolerance:
-                msg += "\nNote: counterexample is not within bounds, but within error tolerance and will be accepted"
-                rv = CounterexampleResult.CORRECT_UP_TO_TOLERANCE
-        else:
-            msg += "\nNote: counterexample in file did not violate the specification and so was invalid!"
-            rv = CounterexampleResult.SPEC_NOT_VIOLATED
-
-    return rv, msg
+    return (
+        CounterexampleResult.SPEC_NOT_VIOLATED,
+        "Solver-provided output values ignored; ONNX CPU replay output did not satisfy the property under strict or tolerated input bounds.\n"
+        + tolerant_msg,
+    )
 
 @cachier(cache_dir='./cachier', stale_after=datetime.timedelta(days=365), wait_for_calc_timeout=30, pickle_reload=False, separate_files=True)
-def is_specification_vio(onnx_filename, vnnlib_filename, x_list, expected_y, tol):
+def is_specification_vio(onnx_filename, vnnlib_filename, x_list, expected_y, input_tol, output_tol=0.0):
     """check that the spec file was obeyed"""
 
-    msg = "Checking if spec was actually violated"
+    msg = f"Checking if spec was actually violated (input_tol={input_tol}, output_tol={output_tol})"
     onnx_model = onnx.load(onnx_filename) 
 
     inp, out, _ = get_io_nodes(onnx_model)
@@ -307,21 +299,23 @@ def is_specification_vio(onnx_filename, vnnlib_filename, x_list, expected_y, tol
         assert len(input_box) == len(x_list), f"input box len: {len(input_box)}, x_in len: {len(x_list)}"
 
         inside_input_box = True
+        max_input_violation = 0.0
 
         for (lb, ub), x in zip(input_box, x_list):
-            if x < lb - tol or x > ub + tol:
+            max_input_violation = max(max_input_violation, lb - x, x - ub, 0.0)
+            if x < lb - input_tol or x > ub + input_tol:
                 inside_input_box = False
                 break
 
         if inside_input_box:
-            msg += f"\nCE input X was inside box #{i}"
+            msg += f"\nCE input X was inside box #{i}; max input violation={max_input_violation}"
             
             # check spec
             violated = False
                 
             for j, (prop_mat, prop_rhs) in enumerate(spec_list):
                 vec = prop_mat.dot(expected_y)
-                sat = np.all(vec <= prop_rhs + tol)
+                sat = np.all(vec <= prop_rhs + output_tol)
 
                 if sat:
                     msg += f"\nprop #{j} violated:\n{vec - prop_rhs}"

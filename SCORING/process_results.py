@@ -18,7 +18,8 @@ from benchmark_instances import (
     network_stem,
     property_stem,
 )
-from counterexamples import is_correct_counterexample, CounterexampleResult
+from cex_checks import get_or_create_check
+from counterexamples import check_counterexample, CounterexampleResult
 from settings import Settings, GnuplotSettings
 
 class ToolResult:
@@ -225,6 +226,18 @@ def benchmark_version_from_result_path(cat, network_path):
 
     return benchmark_version_from_network_field(cat, network_path)
 
+
+def counterexample_check(ce_path, cat, net, prop, benchmark_version, row):
+    return get_or_create_check(
+        ce_path,
+        cat,
+        net,
+        prop,
+        benchmark_version,
+        row,
+        lambda: check_counterexample(ce_path, cat, net, prop, benchmark_version),
+    )
+
 def compare_results(all_tool_names, gnuplot_tool_cat_times, result_list, single_overhead, scored):
     """compare results across tools"""
 
@@ -368,7 +381,7 @@ def compare_results(all_tool_names, gnuplot_tool_cat_times, result_list, single_
 
                     validator_net = full_network_path if benchmark_version == "2.0" else net
                     validator_prop = row[ToolResult.PROP] if benchmark_version == "2.0" else prop
-                    tup = ce_path, cat, validator_net, validator_prop, benchmark_version
+                    tup = ce_path, cat, validator_net, validator_prop, benchmark_version, row
                     counterexamples_violated.append(tup)
 
                 table_row.append(f"{round(secs, 1)} ({res[0]})")
@@ -398,16 +411,12 @@ def compare_results(all_tool_names, gnuplot_tool_cat_times, result_list, single_
 
                 for tup, tool in zip(counterexamples_violated, tools_violated):
                     print(f"\nchecking counterexample for {tool}")
-                    res = is_correct_counterexample(*tup)
+                    check = counterexample_check(*tup)
+                    res = check["result"]
 
                     correct_violations[tool] = res
 
                 print(f"were violated counterexamples valid?: {correct_violations}")
-
-                valid_counterexamples = (
-                    CounterexampleResult.CORRECT,
-                    CounterexampleResult.CORRECT_UP_TO_TOLERANCE,
-                )
 
                 # NOTE: if every reported counterexample is UNSUPPORTED (our validator
                 # could not check any of them), this falls through to 'unsat'. The
@@ -415,10 +424,14 @@ def compare_results(all_tool_names, gnuplot_tool_cat_times, result_list, single_
                 # unsupported_ce_this_tool branch), but the displayed true_result is then
                 # only a best guess. TODO: surface these instances explicitly for manual
                 # review instead of silently labelling them 'unsat'.
-                if np.any([x in valid_counterexamples for x in correct_violations.values()]):
+                # Only a strictly CORRECT (zero-tolerance) witness establishes 'sat';
+                # CORRECT_UP_TO_TOLERANCE is treated as not authoritative here.
+                if np.any([x == CounterexampleResult.CORRECT for x in correct_violations.values()]):
                     true_result = 'sat'
-                else:
+                elif times_holds:
                     true_result = 'unsat'
+                else:
+                    true_result = '-'
 
                 # if times_holds and times_violated and np.all([x == CounterexampleResult.CORRECT_UP_TO_TOLERANCE for x in correct_violations.values()]):
                 #     with open('conflicting.csv', 'a') as f:
@@ -1347,6 +1360,7 @@ def process_single_tool_or_benchmark(csv_path):
         total_error = 0
         total_unknown = 0
         total_ce_correct = 0
+        total_ce_tolerance = 0
         total_ce_incorrect = 0
         total_ce_missing = 0
         
@@ -1359,6 +1373,7 @@ def process_single_tool_or_benchmark(csv_path):
             category_error = 0
             category_unknown = 0
             category_ce_correct = 0
+            category_ce_tolerance = 0
             category_ce_incorrect = 0
             category_ce_missing = 0
             
@@ -1404,8 +1419,15 @@ def process_single_tool_or_benchmark(csv_path):
                         # Validate counterexample
                         validator_net = full_network_path if benchmark_version == "2.0" else net
                         validator_prop = row[ToolResult.PROP] if benchmark_version == "2.0" else prop_name
-                        tup = ce_path, cat, validator_net, validator_prop, benchmark_version
-                        res = is_correct_counterexample(*tup)
+                        check = counterexample_check(
+                            ce_path,
+                            cat,
+                            validator_net,
+                            validator_prop,
+                            benchmark_version,
+                            row,
+                        )
+                        res = check["result"]
                         
                         # Check if the counterexample is valid
                         if res == CounterexampleResult.CORRECT:
@@ -1414,11 +1436,16 @@ def process_single_tool_or_benchmark(csv_path):
                             total_ce_correct += 1
                         elif res == CounterexampleResult.CORRECT_UP_TO_TOLERANCE:
                             ce_status = "VALID (TOL)"
-                            category_ce_correct += 1
-                            total_ce_correct += 1
+                            category_ce_tolerance += 1
+                            total_ce_tolerance += 1
+                        elif res == CounterexampleResult.NO_CE:
+                            ce_status = "MISSING"
+                            log_print(f"  - Missing CE: {ce_path} for {instance}; {check.get('rationale', '')}")
+                            category_ce_missing += 1
+                            total_ce_missing += 1
                         else:
                             ce_status = f"INVALID ({res})"
-                            log_print(f"  - CE Error: {res} for {instance}")
+                            log_print(f"  - CE Error: {res} for {instance}; {check.get('rationale', '')}")
                             category_ce_incorrect += 1
                             total_ce_incorrect += 1
                             
@@ -1457,7 +1484,7 @@ def process_single_tool_or_benchmark(csv_path):
             log_print(f"Category Summary: holds={category_holds}, violated={category_violated}, "
                   f"timeout={category_timeout}, error={category_error}, unknown={category_unknown}")
             if category_violated > 0:
-                log_print(f"Counterexample Summary: valid={category_ce_correct}, invalid={category_ce_incorrect}, "
+                log_print(f"Counterexample Summary: valid={category_ce_correct}, valid_with_tolerance={category_ce_tolerance}, invalid={category_ce_incorrect}, "
                       f"missing={category_ce_missing}")
         
         # Print overall summary
@@ -1473,6 +1500,7 @@ def process_single_tool_or_benchmark(csv_path):
         if total_violated > 0:
             log_print(f"Counterexample Summary:")
             log_print(f"  - valid:   {total_ce_correct} ({total_ce_correct/total_violated*100:.1f}%)")
+            log_print(f"  - valid_with_tolerance: {total_ce_tolerance} ({total_ce_tolerance/total_violated*100:.1f}%)")
             log_print(f"  - invalid: {total_ce_incorrect} ({total_ce_incorrect/total_violated*100:.1f}%)")
             log_print(f"  - missing: {total_ce_missing} ({total_ce_missing/total_violated*100:.1f}%)")
         log_print("=" * 80)
