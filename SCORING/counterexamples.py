@@ -20,7 +20,7 @@ def get_default_session_options_new():
      return _default_session_options
 ort.capi._pybind_state.get_default_session_options = get_default_session_options_new
 
-from vnnlib import read_vnnlib_simple, get_io_nodes
+from vnnlib_v1 import read_vnnlib_simple, get_io_nodes
 
 from cachier import cachier
 from settings import Settings
@@ -64,6 +64,8 @@ class CounterexampleResult:
     EXEC_DOESNT_MATCH = "exec_doesnt_match"
     SPEC_NOT_VIOLATED = "spec_not_violated"
     WRONG_SHAPE = 'wrong_shape'
+    MALFORMED_CE = "malformed_ce"
+    UNSUPPORTED = "unsupported"
 
 def is_correct_counterexample(ce_path, cat, net, prop, benchmark_version=None):
     """is the counterexample correct? returns an element of CounterexampleResult 
@@ -98,6 +100,22 @@ def is_correct_counterexample(ce_path, cat, net, prop, benchmark_version=None):
 
     if benchmark_version and not benchmark_dir.is_dir():
         raise FileNotFoundError(f"benchmark version directory not found: {benchmark_dir}")
+
+    if benchmark_version == "2.0":
+        from counterexamples_v2 import validate_vnnlib2_counterexample
+
+        res, msg = validate_vnnlib2_counterexample(
+            benchmark_dir,
+            net,
+            prop,
+            ce_path,
+            Settings.COUNTEREXAMPLE_ATOL,
+            Settings.COUNTEREXAMPLE_RTOL,
+            CounterexampleResult,
+            Settings.IGNORE_CE_Y,
+        )
+        print(f"CE result {res}: {msg}")
+        return res
 
     onnx_filename = str(benchmark_dir / "onnx" / f"{net}.onnx")
     vnnlib_filename = str(benchmark_dir / "vnnlib" / f"{prop}.vnnlib")

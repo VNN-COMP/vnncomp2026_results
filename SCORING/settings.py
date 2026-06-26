@@ -124,6 +124,7 @@ class Settings:
 
     CSV_SUBSTITUTIONS = [('unsat', 'holds'),
                          ('sat', 'violated'),
+                         ('timed-out', 'timeout'),  # vnnlib 2.0 spelling; vnnlib 1.0 'timeout' handled below
                          ('no_result_in_file', 'unknown'),
                          ('prepare_instance_error_', 'unknown'),
                          ('run_instance_timeout', 'timeout'),
