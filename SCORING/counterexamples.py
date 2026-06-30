@@ -315,7 +315,7 @@ def is_specification_vio(onnx_filename, vnnlib_filename, x_list, expected_y, inp
     msg = f"Checking if spec was actually violated (input_tol={input_tol}, output_tol={output_tol})"
     onnx_model = onnx.load(onnx_filename) 
 
-    inp, out, _ = get_io_nodes(onnx_model)
+    inp, out, input_dtype = get_io_nodes(onnx_model)
 
     inp_shape = tuple(d.dim_value if d.dim_value != 0 else 1 for d in inp.type.tensor_type.shape.dim)
     out_shape = tuple(d.dim_value if d.dim_value != 0 else 1 for d in out.type.tensor_type.shape.dim)
@@ -330,17 +330,19 @@ def is_specification_vio(onnx_filename, vnnlib_filename, x_list, expected_y, inp
         num_outputs *= n
 
     box_spec_list = read_vnnlib_simple(vnnlib_filename, num_inputs, num_outputs)
+    replay_x = np.asarray(x_list, dtype=input_dtype).ravel(order='C')
 
     rv = False
 
     for i, box_spec in enumerate(box_spec_list):
         input_box, spec_list = box_spec
-        assert len(input_box) == len(x_list), f"input box len: {len(input_box)}, x_in len: {len(x_list)}"
+        assert len(input_box) == len(replay_x), \
+            f"input box len: {len(input_box)}, x_in len: {len(replay_x)}"
 
         inside_input_box = True
         max_input_violation = 0.0
 
-        for (lb, ub), x in zip(input_box, x_list):
+        for (lb, ub), x in zip(input_box, replay_x):
             max_input_violation = max(max_input_violation, lb - x, x - ub, 0.0)
             if x < lb - input_tol or x > ub + input_tol:
                 inside_input_box = False

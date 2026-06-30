@@ -378,6 +378,7 @@ def _validate_element_type(definition, onnx_value, network_name):
 
 def _run_networks(query, model_paths, assignment):
     computed_outputs = {}
+    effective_inputs = {}
 
     for network in query.networks:
         if network.hidden:
@@ -410,6 +411,7 @@ def _run_networks(query, model_paths, assignment):
             value = assignment[definition.name].astype(
                 _ONNX_RUNTIME_DTYPES[onnx_input.type], copy=False
             )
+            effective_inputs[definition.name] = value
             feeds[onnx_name] = _reshape_for_onnx(
                 value, onnx_input.shape, definition.name
             )
@@ -430,7 +432,7 @@ def _run_networks(query, model_paths, assignment):
                 output = output.reshape(definition.shape)
             computed_outputs[definition.name] = output
 
-    return computed_outputs
+    return computed_outputs, effective_inputs
 
 
 def _eval_arithmetic(expression, assignment):
@@ -575,7 +577,7 @@ def validate_vnnlib2_counterexample(
         query = vnnlib.parse_query_string(_read_text(property_path))
         assignment = parse_text_assignment(assignment_content, query)
         model_paths = _network_model_paths(query, network_field, benchmark_dir)
-        computed = _run_networks(query, model_paths, assignment)
+        computed, effective_inputs = _run_networks(query, model_paths, assignment)
     except InvalidAssignmentError as error:
         return result_type.MALFORMED_CE, str(error)
     except (
@@ -587,6 +589,7 @@ def validate_vnnlib2_counterexample(
         return result_type.UNSUPPORTED, str(error)
 
     evaluation_assignment = dict(assignment)
+    evaluation_assignment.update(effective_inputs)
     evaluation_assignment.update(computed)
     execution_message = "counterexample outputs ignored; using ONNX CPU replay outputs"
 
