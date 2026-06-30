@@ -60,6 +60,33 @@ def read_ce_file(ce_path):
 
     return content
 
+def _rebased_benchmark_path(src_path, benchmark_dir, top):
+    """Re-root a file path recorded in a tool's results.csv onto the local
+    benchmark_dir, preserving any subdirectory under the benchmark's
+    'onnx'/'vnnlib' folder.
+
+    The results.csv NETWORK/PROP columns hold the *full* onnx/vnnlib paths as
+    seen on the run machine (emit_instance_rows in run_all_categories.sh writes
+    .../benchmarks/<cat>/<ver>/vnnlib/<subdir>/p.vnnlib), so the segment from
+    'top' onward is exactly the benchmark-relative path. Re-rooting it is what
+    lets nested benchmarks (safenlp's medical/ruarobot, soundnessbench's
+    properties/, challenging_certified_training's per-network folders) resolve
+    without per-benchmark special cases -- the bare <stem> reconstruction below
+    drops the subdir and fails with "vnnlib/onnx file not found".
+
+    Returns None when src_path is missing, is a multi-network list repr, or has
+    no 'top' segment, so the caller falls back to the flat <stem> reconstruction.
+    """
+    if not src_path or src_path.lstrip().startswith("["):
+        return None
+
+    parts = Path(src_path).parts
+    indices = [i for i, part in enumerate(parts) if part == top]
+    if not indices:
+        return None
+
+    return str(Path(benchmark_dir).joinpath(*parts[indices[-1]:]))
+
 class CounterexampleResult:
     """enum for return value of is_correct_counterexample"""
 
@@ -77,8 +104,15 @@ def is_correct_counterexample(ce_path, cat, net, prop, benchmark_version=None):
     return res
 
 
-def check_counterexample(ce_path, cat, net, prop, benchmark_version=None):
-    """is the counterexample correct? returns an element of CounterexampleResult 
+def check_counterexample(ce_path, cat, net, prop, benchmark_version=None,
+                         onnx_src=None, vnnlib_src=None):
+    """is the counterexample correct? returns an element of CounterexampleResult
+
+    onnx_src/vnnlib_src are the full onnx/vnnlib paths from the tool's
+    results.csv (NETWORK/PROP columns). When given, the v1 path resolves the
+    source files by re-rooting them onto benchmark_dir (preserving subdirs)
+    instead of rebuilding 'onnx/<net>.onnx' / 'vnnlib/<prop>.vnnlib' from the
+    flattened stems -- see _rebased_benchmark_path.
     """
 
     print(f"Checking ce path: {ce_path}, {cat}")
@@ -127,8 +161,13 @@ def check_counterexample(ce_path, cat, net, prop, benchmark_version=None):
         print(f"CE result {res}: {msg}")
         return res, msg
 
-    onnx_filename = str(benchmark_dir / "onnx" / f"{net}.onnx")
-    vnnlib_filename = str(benchmark_dir / "vnnlib" / f"{prop}.vnnlib")
+    onnx_filename = _rebased_benchmark_path(onnx_src, benchmark_dir, "onnx")
+    if onnx_filename is None:
+        onnx_filename = str(benchmark_dir / "onnx" / f"{net}.onnx")
+
+    vnnlib_filename = _rebased_benchmark_path(vnnlib_src, benchmark_dir, "vnnlib")
+    if vnnlib_filename is None:
+        vnnlib_filename = str(benchmark_dir / "vnnlib" / f"{prop}.vnnlib")
 
     if not Path(onnx_filename).is_file():
         # try unzipping

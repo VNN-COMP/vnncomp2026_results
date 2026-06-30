@@ -235,7 +235,15 @@ def counterexample_check(ce_path, cat, net, prop, benchmark_version, row):
         prop,
         benchmark_version,
         row,
-        lambda: check_counterexample(ce_path, cat, net, prop, benchmark_version),
+        lambda: check_counterexample(
+            ce_path,
+            cat,
+            net,
+            prop,
+            benchmark_version,
+            onnx_src=row[ToolResult.NETWORK],
+            vnnlib_src=row[ToolResult.PROP],
+        ),
     )
 
 def compare_results(all_tool_names, gnuplot_tool_cat_times, result_list, single_overhead, scored):
@@ -364,15 +372,17 @@ def compare_results(all_tool_names, gnuplot_tool_cat_times, result_list, single_
                     prop = property_stem(row[ToolResult.PROP])
                     
                     if "safenlp" in full_network_path:
+                        # safenlp reuses the same vnnlib stem under medical/ and
+                        # ruarobot/, so the CE *filename* carries a subdir prefix to
+                        # stay unique (matches run_all_categories.sh). Source-file
+                        # resolution is general (check_counterexample onnx_src/
+                        # vnnlib_src re-root the full path), so net/prop need no
+                        # subdir rewrite here.
                         if "medical" in full_network_path:
                             ce_path = f"../{t.tool_name}/{cat}/medical_{net}_{prop}.counterexample.gz"
-                            net = f"medical/{net}"
-                            prop = f"medical/{prop}"
                         else:
                             assert "ruarobot" in full_network_path
                             ce_path = f"../{t.tool_name}/{cat}/ruarobot_{net}_{prop}.counterexample.gz"
-                            net = f"ruarobot/{net}"
-                            prop = f"ruarobot/{prop}"
                     else:
                         ce_path = f"../{t.tool_name}/{cat}/{net}_{prop}.counterexample.gz"
 
@@ -1401,24 +1411,21 @@ def process_single_tool_or_benchmark(csv_path):
                 if result == "violated":
                     # Construct counterexample path
                     if "safenlp" in full_network_path:
+                        # CE filename carries a subdir prefix for uniqueness (safenlp
+                        # reuses the same stem under medical/ and ruarobot/); source
+                        # resolution is general (check_counterexample onnx_src/vnnlib_src).
                         if "medical" in full_network_path:
                             ce_path = f"../{tool_name}/{cat}/medical_{network}_{prop}.counterexample.gz"
-                            net = f"medical/{network}"
-                            prop_name = f"medical/{prop}"
                         else:
                             # Assuming "ruarobot" as in the original code
                             ce_path = f"../{tool_name}/{cat}/ruarobot_{network}_{prop}.counterexample.gz"
-                            net = f"ruarobot/{network}"
-                            prop_name = f"ruarobot/{prop}"
                     else:
                         ce_path = f"../{tool_name}/{cat}/{network}_{prop}.counterexample.gz"
-                        net = network
-                        prop_name = prop
-                    
+
                     try:
                         # Validate counterexample
-                        validator_net = full_network_path if benchmark_version == "2.0" else net
-                        validator_prop = row[ToolResult.PROP] if benchmark_version == "2.0" else prop_name
+                        validator_net = full_network_path if benchmark_version == "2.0" else network
+                        validator_prop = row[ToolResult.PROP] if benchmark_version == "2.0" else prop
                         check = counterexample_check(
                             ce_path,
                             cat,
