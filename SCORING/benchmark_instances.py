@@ -1,6 +1,9 @@
 """Helpers for interpreting benchmark instance fields from result CSV files."""
 
 import ast
+import csv
+import math
+from functools import lru_cache
 from pathlib import Path
 
 
@@ -41,6 +44,25 @@ def property_stem(property_field):
     return Path(property_field).stem
 
 
+def _path_from_directory(path, directory):
+    parts = Path(path).parts
+    try:
+        index = parts.index(directory)
+    except ValueError as error:
+        raise ValueError(f"path {path!r} does not contain a {directory!r} directory") from error
+    return parts[index:]
+
+
+def benchmark_instance_identity(network_field, property_field):
+    """Return a path-stable identity for one version-specific benchmark instance."""
+
+    networks = tuple(
+        (name, _path_from_directory(path, "onnx"))
+        for name, path in parse_network_field(network_field)
+    )
+    return networks, _path_from_directory(property_field, "vnnlib")
+
+
 def benchmark_version_from_network_field(category, network_field):
     """Return the version directory present in a result CSV network field."""
 
@@ -60,6 +82,38 @@ def benchmark_version_from_network_field(category, network_field):
                     return candidate
 
     return None
+
+
+@lru_cache(maxsize=None)
+def benchmark_instance_rows(benchmark_repo, category, version):
+    """Return version-specific instance identities and their declared timeouts."""
+
+    assert category[4] == "_", f"expected year at start of category: {category}"
+    instances_path = (
+        Path(benchmark_repo)
+        / "benchmarks"
+        / category[5:]
+        / version
+        / "instances.csv"
+    )
+
+    instances = []
+    with open(instances_path, newline="", encoding="utf-8") as csvfile:
+        for index, row in enumerate(csv.reader(csvfile)):
+            if len(row) < 3:
+                raise ValueError(
+                    f"expected at least 3 columns in {instances_path} row {index + 1}, got {row}"
+                )
+
+            timeout = float(row[2])
+            if not math.isfinite(timeout) or timeout <= 0:
+                raise ValueError(
+                    f"invalid timeout {row[2]!r} in {instances_path} row {index + 1}"
+                )
+            identity = benchmark_instance_identity(row[0], row[1])
+            instances.append((identity, timeout))
+
+    return tuple(instances)
 
 
 def resolve_benchmark_path(benchmark_dir, result_path, expected_directory):
