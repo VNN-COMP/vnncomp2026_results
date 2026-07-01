@@ -14,6 +14,8 @@ from collections import defaultdict
 import numpy as np
 
 from benchmark_instances import (
+    benchmark_instance_identity,
+    benchmark_instance_rows,
     benchmark_version_from_network_field,
     network_stem,
     property_stem,
@@ -49,6 +51,7 @@ class ToolResult:
 
         self.tool_name = tool_name
         self.category_to_list = defaultdict(list) # maps category -> list of results
+        self.category_to_timeouts = defaultdict(list)
 
         self.skip_benchmarks = skip_benchmarks
         self.cpu_benchmarks = cpu_benchmarks
@@ -125,6 +128,7 @@ class ToolResult:
 
                 network = row[ToolResult.NETWORK]
                 result = row[ToolResult.RESULT]
+                measured_result = result
                 cat = row[ToolResult.CATEGORY]
 
                 # in 2023, year was prepended to category
@@ -153,6 +157,23 @@ class ToolResult:
 
                 if not ("test_nano" in network or "test_tiny" in network):
                     self.category_to_list[cat].append(row)
+                    version = benchmark_version_from_network_field(cat, network)
+                    assert version is not None, \
+                        f"could not determine benchmark version from network field: {network}"
+                    benchmark_repo = Settings.BENCHMARK_REPOS[year]
+                    instances = benchmark_instance_rows(benchmark_repo, cat, version)
+                    instance_index = len(self.category_to_timeouts[cat])
+                    assert instance_index < len(instances), \
+                        f"more result rows than declared instances for {cat} {version}"
+                    expected_identity, instance_timeout = instances[instance_index]
+                    actual_identity = benchmark_instance_identity(
+                        row[ToolResult.NETWORK], row[ToolResult.PROP]
+                    )
+                    assert actual_identity == expected_identity, (
+                        f"result row {instance_index} for {self.tool_name} {cat} {version} "
+                        f"does not match instances.csv: {actual_identity} != {expected_identity}"
+                    )
+                    self.category_to_timeouts[cat].append(instance_timeout)
                     self.total_instances[cat] = self.total_instances.get(cat, 0) + 1
 
                 if result not in ["holds", "violated", "timeout", "error", "unknown"]:
@@ -160,7 +181,7 @@ class ToolResult:
                     print(f"Unexpected results: {unexpected_results}")
                     exit(1)
 
-                if result in ["holds", "violated"]:
+                if measured_result in ["holds", "violated"]:
                     if cat in self.cpu_benchmarks:
                         self.cpu_overhead = min(self.cpu_overhead, run_time)
                     else:
@@ -170,15 +191,46 @@ class ToolResult:
 
         assert not unexpected_results, f"Unexpected results: {unexpected_results}"
 
+        forced_timeouts = self.enforce_scoring_timeouts()
+
         print(f"Loaded {self.tool_name}, default-overhead (gpu): {round(self.gpu_overhead, 1)}s," + \
               f"cpu-overhead: {round(self.cpu_overhead, 1)}s, " + \
-              f"prepare time: {round(self.max_prepare, 1)}s")
+              f"prepare time: {round(self.max_prepare, 1)}s, " + \
+              f"scoring timeouts: {forced_timeouts}")
 
         for skip_benchmark in self.skip_benchmarks:
             assert skip_benchmark in self.category_to_list, f"skip benchmark '{skip_benchmark}' not found in cat " + \
                 f"list: {list(self.category_to_list.keys())}"
 
         self.delete_empty_categories()
+
+    def enforce_scoring_timeouts(self):
+        """Turn results exceeding their declared instance timeout into timeouts."""
+
+        forced_timeouts = 0
+
+        for cat, rows in self.category_to_list.items():
+            timeouts = self.category_to_timeouts[cat]
+            assert len(rows) == len(timeouts), \
+                f"result/timeout count mismatch for {self.tool_name} {cat}"
+
+            for row, instance_timeout in zip(rows, timeouts):
+                if row[ToolResult.RESULT] not in ["holds", "violated"]:
+                    continue
+
+                run_time = float(row[ToolResult.RUN_TIME])
+
+                if run_time > instance_timeout:
+                    print(
+                        f"Forcing timeout for {self.tool_name} {cat} "
+                        f"{network_stem(row[ToolResult.NETWORK])}-"
+                        f"{property_stem(row[ToolResult.PROP])}: runtime {run_time:.3f}s exceeds "
+                        f"instance timeout {instance_timeout:.3f}s"
+                    )
+                    row[ToolResult.RESULT] = "timeout"
+                    forced_timeouts += 1
+
+        return forced_timeouts
 
     def delete_empty_categories(self):
         """delete categories without successful measurements"""

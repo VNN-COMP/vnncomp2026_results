@@ -61,3 +61,17 @@ the 1.0 and 2.0 `instances.csv` files listing the same instances in the same ord
 `compare_results` asserts that invariant per category. Counterexamples are validated
 against the version each row actually used (1.0 vs 2.0 validators are selected from the
 path).
+
+## Scoring timeouts
+
+Scoring enforces the timeout declared for each row in the corresponding versioned
+`instances.csv`. A reported `holds` or `violated` result is treated as `timeout` when
+
+```
+run_time > instance_timeout
+```
+
+The process-killing grace period does not extend the scoring deadline. Tool overhead is
+reported as a statistic but is neither subtracted from the measured runtime nor added to
+the timeout. A scoring timeout receives no points and no incorrect-result penalty, and is
+excluded from solved-instance plots.
