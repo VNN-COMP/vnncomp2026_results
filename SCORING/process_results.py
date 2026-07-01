@@ -15,7 +15,7 @@ import numpy as np
 
 from benchmark_instances import (
     benchmark_instance_identity,
-    benchmark_instance_rows,
+    benchmark_instance_timeouts,
     benchmark_version_from_network_field,
     network_stem,
     property_stem,
@@ -161,19 +161,18 @@ class ToolResult:
                     assert version is not None, \
                         f"could not determine benchmark version from network field: {network}"
                     benchmark_repo = Settings.BENCHMARK_REPOS[year]
-                    instances = benchmark_instance_rows(benchmark_repo, cat, version)
-                    instance_index = len(self.category_to_timeouts[cat])
-                    assert instance_index < len(instances), \
-                        f"more result rows than declared instances for {cat} {version}"
-                    expected_identity, instance_timeout = instances[instance_index]
-                    actual_identity = benchmark_instance_identity(
+                    # A run executes a random subset of instances.csv in arbitrary order,
+                    # so result row N is not instances.csv row N. Look the per-instance
+                    # timeout up by identity rather than by position.
+                    timeouts = benchmark_instance_timeouts(benchmark_repo, cat, version)
+                    identity = benchmark_instance_identity(
                         row[ToolResult.NETWORK], row[ToolResult.PROP]
                     )
-                    assert actual_identity == expected_identity, (
-                        f"result row {instance_index} for {self.tool_name} {cat} {version} "
-                        f"does not match instances.csv: {actual_identity} != {expected_identity}"
+                    assert identity in timeouts, (
+                        f"result row for {self.tool_name} {cat} {version} not found in "
+                        f"instances.csv: {identity}"
                     )
-                    self.category_to_timeouts[cat].append(instance_timeout)
+                    self.category_to_timeouts[cat].append(timeouts[identity])
                     self.total_instances[cat] = self.total_instances.get(cat, 0) + 1
 
                 if result not in ["holds", "violated", "timeout", "error", "unknown"]:

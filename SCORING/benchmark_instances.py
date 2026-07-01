@@ -116,6 +116,17 @@ def benchmark_instance_rows(benchmark_repo, category, version):
     return tuple(instances)
 
 
+@lru_cache(maxsize=None)
+def benchmark_instance_timeouts(benchmark_repo, category, version):
+    """Map each instance identity to its declared timeout (order-independent).
+
+    A run executes a random subset of instances.csv in arbitrary order, so scoring
+    looks timeouts up by instance identity instead of by row position.
+    """
+
+    return dict(benchmark_instance_rows(benchmark_repo, category, version))
+
+
 def resolve_benchmark_path(benchmark_dir, result_path, expected_directory):
     """Resolve a path stored in results.csv against a benchmark version directory."""
 
